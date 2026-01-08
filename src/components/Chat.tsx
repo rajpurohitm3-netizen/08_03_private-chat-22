@@ -62,6 +62,51 @@ export function Chat({ session, privateKey, initialContact, isPartnerOnline, onB
   const [contactProfile, setContactProfile] = useState<any>(initialContact);
   const [myPublicKey, setMyPublicKey] = useState<CryptoKey | null>(null);
   const [partnerPresence, setPartnerPresence] = useState<{isOnline: boolean; isInChat: boolean; isTyping: boolean;}>({ isOnline: false, isInChat: false, isTyping: false });
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const channel = supabase.channel(`presence-${contactProfile.id}`, {
+      config: { presence: { key: session.user.id } }
+    });
+
+    channel
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState();
+        const partnerState = state[contactProfile.id] as any;
+        if (partnerState && partnerState.length > 0) {
+          setPartnerPresence({
+            isOnline: true,
+            isInChat: true,
+            isTyping: partnerState[0].isTyping || false
+          });
+        } else {
+          setPartnerPresence(prev => ({ ...prev, isInChat: false, isTyping: false }));
+        }
+      })
+      .on("presence", { event: "join", key: contactProfile.id }, ({ newPresences }) => {
+        setPartnerPresence(prev => ({ ...prev, isInChat: true, isTyping: newPresences[0].isTyping || false }));
+      })
+      .on("presence", { event: "leave", key: contactProfile.id }, () => {
+        setPartnerPresence(prev => ({ ...prev, isInChat: false, isTyping: false }));
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await channel.track({ isTyping, user_id: session.user.id });
+        }
+      });
+
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [contactProfile.id, session.user.id, isTyping]);
+
+  const handleTyping = () => {
+    if (!isTyping) setIsTyping(true);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      setIsTyping(false);
+    }, 2000);
+  };
   const [isFocused, setIsFocused] = useState(true);
   const [showSnapshotView, setShowSnapshotView] = useState<any>(null);
   const [showSaveToVault, setShowSaveToVault] = useState<any>(null);
@@ -666,9 +711,56 @@ export function Chat({ session, privateKey, initialContact, isPartnerOnline, onB
               </div>
             </div>
           )}
-          <div className="flex items-center gap-3 relative">
-            <Button variant="ghost" size="icon" onClick={() => setShowOptions(!showOptions)} className={`h-12 w-12 rounded-2xl transition-all ${showOptions ? 'bg-indigo-600 text-white rotate-45' : 'bg-white/5 text-white/20'}`}><Plus className="w-6 h-6" /></Button>
-            <input value={newMessage} onChange={(e) => setNewMessage(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendMessage()} placeholder="Type signal packet..." className="flex-1 bg-white/[0.03] border border-white/10 rounded-[2rem] h-12 px-6 text-sm outline-none focus:border-indigo-500/50" />
+            <div className="flex items-center gap-3 relative">
+              <div className="absolute left-0 -top-10 pointer-events-none">
+                <motion.div
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ 
+                    scale: 1, 
+                    opacity: 1,
+                    y: isTyping || partnerPresence.isTyping ? [0, -15, 0] : 0 
+                  }}
+                  exit={{ scale: 0, opacity: 0 }}
+                  transition={{
+                    y: {
+                      duration: 0.6,
+                      repeat: isTyping || partnerPresence.isTyping ? Infinity : 0,
+                      ease: "easeInOut"
+                    },
+                    scale: { duration: 0.3 },
+                    opacity: { duration: 0.3 }
+                  }}
+                  className={`w-8 h-8 rounded-full shadow-2xl flex items-center justify-center border border-white/10 ${
+                    partnerPresence.isTyping 
+                      ? "bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 shadow-indigo-500/40" 
+                      : isTyping
+                        ? "bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-500/20"
+                        : "bg-white/5 backdrop-blur-xl"
+                  }`}
+                >
+                  {(isTyping || partnerPresence.isTyping) ? (
+                    <div className="flex gap-0.5">
+                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1.5 h-1.5 bg-white rounded-full" />
+                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1.5 h-1.5 bg-white rounded-full" />
+                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1.5 h-1.5 bg-white rounded-full" />
+                    </div>
+                  ) : (
+                    <Zap className="w-4 h-4 text-white/20" />
+                  )}
+                </motion.div>
+                {partnerPresence.isTyping && (
+                  <motion.p 
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="absolute left-10 top-1/2 -translate-y-1/2 text-[9px] font-black uppercase tracking-[0.2em] text-indigo-400 whitespace-nowrap"
+                  >
+                    Typing...
+                  </motion.p>
+                )}
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowOptions(!showOptions)} className={`h-12 w-12 rounded-2xl transition-all ${showOptions ? 'bg-indigo-600 text-white rotate-45' : 'bg-white/5 text-white/20'}`}><Plus className="w-6 h-6" /></Button>
+              <input value={newMessage} onChange={(e) => { setNewMessage(e.target.value); handleTyping(); }} onKeyDown={(e) => e.key === "Enter" && sendMessage()} placeholder="Type signal packet..." className="flex-1 bg-white/[0.03] border border-white/10 rounded-[2rem] h-12 px-6 text-sm outline-none focus:border-indigo-500/50" />
+
             <Button onClick={() => sendMessage()} disabled={!newMessage.trim()} className="h-12 w-12 rounded-2xl bg-indigo-600 hover:bg-indigo-500 shadow-lg shadow-indigo-600/20 disabled:opacity-20"><Send className="w-5 h-5" /></Button>
             <AnimatePresence>{showOptions && (<motion.div initial={{ opacity: 0, y: 10, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 10, scale: 0.9 }} className="absolute bottom-20 left-0 w-64 bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] p-4 shadow-2xl z-50 overflow-hidden"><div className="grid grid-cols-2 gap-2"><label className="flex flex-col items-center justify-center p-4 bg-white/[0.02] border border-white/5 rounded-2xl cursor-pointer"><ImageIcon className="w-6 h-6 text-indigo-400 mb-2" /><span className="text-[8px] font-black uppercase text-white/40">Photo</span><input type="file" className="hidden" accept="image/*" onChange={(e) => handleFileUpload(e, "image")} /></label><button onClick={() => startCamera()} className="flex flex-col items-center justify-center p-4 bg-purple-600/5 border border-purple-500/20 rounded-2xl"><Camera className="w-6 h-6 text-purple-400 mb-2" /><span className="text-[8px] font-black uppercase text-white/40">Snapshot</span></button></div></motion.div>)}</AnimatePresence>
           </div>
