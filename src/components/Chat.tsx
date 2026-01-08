@@ -62,52 +62,76 @@ export function Chat({ session, privateKey, initialContact, isPartnerOnline, onB
   const [contactProfile, setContactProfile] = useState<any>(initialContact);
   const [myPublicKey, setMyPublicKey] = useState<CryptoKey | null>(null);
   const [partnerPresence, setPartnerPresence] = useState<{isOnline: boolean; isInChat: boolean; isTyping: boolean;}>({ isOnline: false, isInChat: false, isTyping: false });
+  const [isFocused, setIsFocused] = useState(true);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    const channel = supabase.channel(`presence-${contactProfile.id}`, {
-      config: { presence: { key: session.user.id } }
+    const channel = supabase.channel(`chat-presence-${contactProfile.id}`, {
+      config: {
+        presence: {
+          key: session.user.id,
+        },
+      },
     });
 
     channel
       .on("presence", { event: "sync" }, () => {
         const state = channel.presenceState();
-        const partnerState = state[contactProfile.id] as any;
+        const partnerState = state[contactProfile.id] as any[];
         if (partnerState && partnerState.length > 0) {
+          const latest = partnerState[partnerState.length - 1];
           setPartnerPresence({
             isOnline: true,
             isInChat: true,
-            isTyping: partnerState[0].isTyping || false
+            isTyping: latest.is_typing || false,
           });
         } else {
-          setPartnerPresence(prev => ({ ...prev, isInChat: false, isTyping: false }));
+          setPartnerPresence({
+            isOnline: isPartnerOnline || false,
+            isInChat: false,
+            isTyping: false,
+          });
         }
       })
-      .on("presence", { event: "join", key: contactProfile.id }, ({ newPresences }) => {
-        setPartnerPresence(prev => ({ ...prev, isInChat: true, isTyping: newPresences[0].isTyping || false }));
+      .on("presence", { event: "join", key: contactProfile.id }, () => {
+        setPartnerPresence(prev => ({ ...prev, isInChat: true }));
       })
       .on("presence", { event: "leave", key: contactProfile.id }, () => {
         setPartnerPresence(prev => ({ ...prev, isInChat: false, isTyping: false }));
       })
       .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
-          await channel.track({ isTyping, user_id: session.user.id });
+          await channel.track({
+            user_id: session.user.id,
+            is_typing: isTyping,
+            online_at: new Date().toISOString(),
+          });
         }
       });
 
     return () => {
       channel.unsubscribe();
     };
-  }, [contactProfile.id, session.user.id, isTyping]);
+  }, [contactProfile.id, session.user.id, isPartnerOnline]);
+
+  useEffect(() => {
+    const channel = supabase.channel(`chat-presence-${contactProfile.id}`);
+    channel.track({
+      user_id: session.user.id,
+      is_typing: isTyping,
+      online_at: new Date().toISOString(),
+    });
+  }, [isTyping, contactProfile.id, session.user.id]);
 
   const handleTyping = () => {
-    if (!isTyping) setIsTyping(true);
+    if (!isTyping) {
+      setIsTyping(true);
+    }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
-    }, 2000);
+    }, 3000);
   };
-  const [isFocused, setIsFocused] = useState(true);
   const [showSnapshotView, setShowSnapshotView] = useState<any>(null);
   const [showSaveToVault, setShowSaveToVault] = useState<any>(null);
   const [vaultPassword, setVaultPassword] = useState("");
@@ -619,84 +643,125 @@ export function Chat({ session, privateKey, initialContact, isPartnerOnline, onB
           </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
-        {loading ? (<div className="flex items-center justify-center h-full animate-spin border-2 border-indigo-500 border-t-transparent rounded-full w-8 h-8 mx-auto" />) : messages.length === 0 ? (<div className="flex flex-col items-center justify-center h-full opacity-20"><ShieldCheck className="w-12 h-12 mb-4" /><p className="text-[10px] font-black uppercase tracking-[0.4em]">End-to-End Encrypted</p></div>) : (
-          messages.map((msg) => {
-            const isMe = msg.sender_id === session.user.id;
-            const hasExpiry = msg.expires_at;
-            const isViewOnce = msg.is_view_once && msg.media_type !== 'snapshot';
-              return (
-                <motion.div 
-                  key={msg.id} 
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }} 
-                  animate={{ opacity: 1, y: 0, scale: 1 }} 
-                  className={`flex ${isMe ? "justify-end" : "justify-start"}`}
-                >
-                  <div className={`max-w-[85%] flex flex-col ${isMe ? "items-end" : "items-start"} group`}>
-                    {msg.media_type === 'snapshot' ? (
-                      <button 
-                        onClick={() => openSnapshot(msg)} 
-                        className="p-5 rounded-[2.5rem] border bg-indigo-500/10 border-indigo-500/20 hover:bg-indigo-500/20 transition-all flex items-center gap-4 shadow-lg shadow-indigo-500/5 group"
-                      >
-                        <div className="p-3 bg-indigo-500 rounded-2xl group-hover:scale-110 transition-transform">
-                          <Camera className="w-5 h-5 text-white" />
-                        </div>
-                        <div className="text-left">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-white">Hidden Signal</p>
-                          <p className="text-[8px] font-bold uppercase tracking-widest text-indigo-400">View Once Protocol</p>
-                        </div>
-                      </button>
-                    ) : msg.media_type === 'image' ? (
-                      <div className="relative group">
-                        <img src={msg.media_url} alt="" className="rounded-[2.5rem] border border-white/10 max-h-80 shadow-2xl transition-transform hover:scale-[1.02]" />
-                        <div className="absolute inset-0 rounded-[2.5rem] bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                           <Download className="w-6 h-6 text-white" />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className={`p-5 px-6 rounded-[2.2rem] text-[13px] font-medium leading-relaxed shadow-2xl relative transition-all hover:translate-y-[-1px] ${
-                        isMe 
-                          ? "bg-gradient-to-br from-indigo-600 to-indigo-700 text-white border border-indigo-500/30 rounded-tr-none" 
-                          : "bg-white/[0.04] backdrop-blur-xl border border-white/10 text-white/90 rounded-tl-none"
-                      }`}>
-                        {msg.decrypted_content || "🔒 Signal Encrypted"}
-                        {isViewOnce && (
-                          <div className="absolute -top-3 -right-3 bg-gradient-to-br from-orange-500 to-red-500 rounded-full p-1.5 shadow-lg border border-black/20">
-                            <Eye className="w-3 h-3 text-white" />
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6 relative">
+          {loading ? (<div className="flex items-center justify-center h-full animate-spin border-2 border-indigo-500 border-t-transparent rounded-full w-8 h-8 mx-auto" />) : messages.length === 0 ? (<div className="flex flex-col items-center justify-center h-full opacity-20"><ShieldCheck className="w-12 h-12 mb-4" /><p className="text-[10px] font-black uppercase tracking-[0.4em]">End-to-End Encrypted</p></div>) : (
+            messages.map((msg) => {
+              const isMe = msg.sender_id === session.user.id;
+              const hasExpiry = msg.expires_at;
+              const isViewOnce = msg.is_view_once && msg.media_type !== 'snapshot';
+                return (
+                  <motion.div 
+                    key={msg.id} 
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }} 
+                    animate={{ opacity: 1, y: 0, scale: 1 }} 
+                    className={`flex ${isMe ? "justify-end" : "justify-start"}`}
+                  >
+                    <div className={`max-w-[85%] flex flex-col ${isMe ? "items-end" : "items-start"} group`}>
+                      {msg.media_type === 'snapshot' ? (
+                        <button 
+                          onClick={() => openSnapshot(msg)} 
+                          className="p-5 rounded-[2.5rem] border bg-indigo-500/10 border-indigo-500/20 hover:bg-indigo-500/20 transition-all flex items-center gap-4 shadow-lg shadow-indigo-500/5 group"
+                        >
+                          <div className="p-3 bg-indigo-500 rounded-2xl group-hover:scale-110 transition-transform">
+                            <Camera className="w-5 h-5 text-white" />
                           </div>
-                        )}
-                      </div>
-                    )}
-                    <div className={`flex items-center gap-3 mt-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 ${isMe ? "flex-row-reverse" : "flex-row"}`}>
-                      <span className="text-[8px] font-bold uppercase tracking-widest text-white/20">
-                        {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}
-                      </span>
-                      {hasExpiry && (
-                        <div className="flex items-center gap-1.5 px-2 py-0.5 bg-orange-500/10 border border-orange-500/20 rounded-full">
-                          <Clock className="w-2.5 h-2.5 text-orange-400" />
-                          <span className="text-[7px] font-black uppercase tracking-widest text-orange-400">
-                            {getTimeRemaining(msg.expires_at)}
-                          </span>
+                          <div className="text-left">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-white">Hidden Signal</p>
+                            <p className="text-[8px] font-bold uppercase tracking-widest text-indigo-400">View Once Protocol</p>
+                          </div>
+                        </button>
+                      ) : msg.media_type === 'image' ? (
+                        <div className="relative group">
+                          <img src={msg.media_url} alt="" className="rounded-[2.5rem] border border-white/10 max-h-80 shadow-2xl transition-transform hover:scale-[1.02]" />
+                          <div className="absolute inset-0 rounded-[2.5rem] bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                             <Download className="w-6 h-6 text-white" />
+                          </div>
                         </div>
-                      )}
-                      {isMe && (
-                        <div className="flex items-center">
-                          {msg.is_viewed ? (
-                            <CheckCheck className="w-3 h-3 text-indigo-400" />
-                          ) : (
-                            <Check className="w-3 h-3 text-white/20" />
+                      ) : (
+                        <div className={`p-5 px-6 rounded-[2.2rem] text-[13px] font-medium leading-relaxed shadow-2xl relative transition-all hover:translate-y-[-1px] ${
+                          isMe 
+                            ? "bg-gradient-to-br from-indigo-600 to-indigo-700 text-white border border-indigo-500/30 rounded-tr-none" 
+                            : "bg-white/[0.04] backdrop-blur-xl border border-white/10 text-white/90 rounded-tl-none"
+                        }`}>
+                          {msg.decrypted_content || "🔒 Signal Encrypted"}
+                          {isViewOnce && (
+                            <div className="absolute -top-3 -right-3 bg-gradient-to-br from-orange-500 to-red-500 rounded-full p-1.5 shadow-lg border border-black/20">
+                              <Eye className="w-3 h-3 text-white" />
+                            </div>
                           )}
                         </div>
                       )}
+                      <div className={`flex items-center gap-3 mt-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 ${isMe ? "flex-row-reverse" : "flex-row"}`}>
+                        <span className="text-[8px] font-bold uppercase tracking-widest text-white/20">
+                          {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </span>
+                        {hasExpiry && (
+                          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-orange-500/10 border border-orange-500/20 rounded-full">
+                            <Clock className="w-2.5 h-2.5 text-orange-400" />
+                            <span className="text-[7px] font-black uppercase tracking-widest text-orange-400">
+                              {getTimeRemaining(msg.expires_at)}
+                            </span>
+                          </div>
+                        )}
+                        {isMe && (
+                          <div className="flex items-center">
+                            {msg.is_viewed ? (
+                              <CheckCheck className="w-3 h-3 text-indigo-400" />
+                            ) : (
+                              <Check className="w-3 h-3 text-white/20" />
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  </motion.div>
+                );
+  
+            })
+          )}
+          <div ref={messagesEndRef} />
+          
+          {/* Bouncing Ball Typing Indicator */}
+          <AnimatePresence>
+            {(isTyping || partnerPresence.isTyping) && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0, y: 20 }}
+                className="absolute bottom-6 left-6 z-10 flex flex-col items-start gap-2"
+              >
+                <motion.div
+                  animate={{ 
+                    y: [0, -20, 0],
+                    scale: [1, 1.1, 1]
+                  }}
+                  transition={{ 
+                    duration: 0.6, 
+                    repeat: Infinity, 
+                    ease: "easeInOut" 
+                  }}
+                  className={`w-4 h-4 rounded-full shadow-lg ${
+                    partnerPresence.isTyping 
+                      ? "bg-indigo-500 shadow-indigo-500/50" 
+                      : "bg-emerald-500 shadow-emerald-500/50"
+                  }`}
+                >
+                  <motion.div
+                    animate={{ opacity: [0.2, 0.5, 0.2], scale: [1, 1.5, 1] }}
+                    transition={{ duration: 1.5, repeat: Infinity }}
+                    className={`absolute inset-0 rounded-full blur-md ${
+                      partnerPresence.isTyping ? "bg-indigo-400" : "bg-emerald-400"
+                    }`}
+                  />
                 </motion.div>
-              );
+                <p className="text-[8px] font-black uppercase tracking-[0.2em] text-white/30 ml-1">
+                  {partnerPresence.isTyping ? "Partner Typing..." : "Broadcasting..."}
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
-          })
-        )}
-        <div ref={messagesEndRef} />
-      </div>
 
       <footer className="p-6 bg-black/40 backdrop-blur-3xl border-t border-white/5 shrink-0">
           {autoDeleteMode !== "none" && (
@@ -711,56 +776,18 @@ export function Chat({ session, privateKey, initialContact, isPartnerOnline, onB
               </div>
             </div>
           )}
-            <div className="flex items-center gap-3 relative">
-              <div className="absolute left-0 -top-10 pointer-events-none">
-                <motion.div
-                  initial={{ scale: 0, opacity: 0 }}
-                  animate={{ 
-                    scale: 1, 
-                    opacity: 1,
-                    y: isTyping || partnerPresence.isTyping ? [0, -15, 0] : 0 
-                  }}
-                  exit={{ scale: 0, opacity: 0 }}
-                  transition={{
-                    y: {
-                      duration: 0.6,
-                      repeat: isTyping || partnerPresence.isTyping ? Infinity : 0,
-                      ease: "easeInOut"
-                    },
-                    scale: { duration: 0.3 },
-                    opacity: { duration: 0.3 }
-                  }}
-                  className={`w-8 h-8 rounded-full shadow-2xl flex items-center justify-center border border-white/10 ${
-                    partnerPresence.isTyping 
-                      ? "bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 shadow-indigo-500/40" 
-                      : isTyping
-                        ? "bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-500/20"
-                        : "bg-white/5 backdrop-blur-xl"
-                  }`}
-                >
-                  {(isTyping || partnerPresence.isTyping) ? (
-                    <div className="flex gap-0.5">
-                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1.5 h-1.5 bg-white rounded-full" />
-                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1.5 h-1.5 bg-white rounded-full" />
-                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1.5 h-1.5 bg-white rounded-full" />
-                    </div>
-                  ) : (
-                    <Zap className="w-4 h-4 text-white/20" />
-                  )}
-                </motion.div>
-                {partnerPresence.isTyping && (
-                  <motion.p 
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="absolute left-10 top-1/2 -translate-y-1/2 text-[9px] font-black uppercase tracking-[0.2em] text-indigo-400 whitespace-nowrap"
-                  >
-                    Typing...
-                  </motion.p>
-                )}
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setShowOptions(!showOptions)} className={`h-12 w-12 rounded-2xl transition-all ${showOptions ? 'bg-indigo-600 text-white rotate-45' : 'bg-white/5 text-white/20'}`}><Plus className="w-6 h-6" /></Button>
-              <input value={newMessage} onChange={(e) => { setNewMessage(e.target.value); handleTyping(); }} onKeyDown={(e) => e.key === "Enter" && sendMessage()} placeholder="Type signal packet..." className="flex-1 bg-white/[0.03] border border-white/10 rounded-[2rem] h-12 px-6 text-sm outline-none focus:border-indigo-500/50" />
-
+          <div className="flex items-center gap-3 relative">
+            <Button variant="ghost" size="icon" onClick={() => setShowOptions(!showOptions)} className={`h-12 w-12 rounded-2xl transition-all ${showOptions ? 'bg-indigo-600 text-white rotate-45' : 'bg-white/5 text-white/20'}`}><Plus className="w-6 h-6" /></Button>
+            <input 
+              value={newMessage} 
+              onChange={(e) => {
+                setNewMessage(e.target.value);
+                handleTyping();
+              }} 
+              onKeyDown={(e) => e.key === "Enter" && sendMessage()} 
+              placeholder="Type signal packet..." 
+              className="flex-1 bg-white/[0.03] border border-white/10 rounded-[2rem] h-12 px-6 text-sm outline-none focus:border-indigo-500/50" 
+            />
             <Button onClick={() => sendMessage()} disabled={!newMessage.trim()} className="h-12 w-12 rounded-2xl bg-indigo-600 hover:bg-indigo-500 shadow-lg shadow-indigo-600/20 disabled:opacity-20"><Send className="w-5 h-5" /></Button>
             <AnimatePresence>{showOptions && (<motion.div initial={{ opacity: 0, y: 10, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 10, scale: 0.9 }} className="absolute bottom-20 left-0 w-64 bg-[#0a0a0a] border border-white/10 rounded-[2.5rem] p-4 shadow-2xl z-50 overflow-hidden"><div className="grid grid-cols-2 gap-2"><label className="flex flex-col items-center justify-center p-4 bg-white/[0.02] border border-white/5 rounded-2xl cursor-pointer"><ImageIcon className="w-6 h-6 text-indigo-400 mb-2" /><span className="text-[8px] font-black uppercase text-white/40">Photo</span><input type="file" className="hidden" accept="image/*" onChange={(e) => handleFileUpload(e, "image")} /></label><button onClick={() => startCamera()} className="flex flex-col items-center justify-center p-4 bg-purple-600/5 border border-purple-500/20 rounded-2xl"><Camera className="w-6 h-6 text-purple-400 mb-2" /><span className="text-[8px] font-black uppercase text-white/40">Snapshot</span></button></div></motion.div>)}</AnimatePresence>
           </div>
